@@ -1,0 +1,54 @@
+{
+  "embed_model": "text-embedding-3-small",
+  "chat_model": "gpt-4o-mini",
+  "chunk_chars": 1200,
+  "overlap_chars": 200,
+  "docs": [
+    {
+      "title": "About",
+      "url": "https://www.marrfa.com/about",
+      "chars": 2500
+    },
+    {
+      "title": "History",
+      "url": "https://www.marrfa.com/about#history",
+      "chars": 566
+    },
+    {
+      "title": "Values",
+      "url": "https://www.marrfa.com/about#ourvalue",
+      "chars": 559
+    },
+    {
+      "title": "Team",
+      "url": "https://www.marrfa.com/about#ourteam",
+      "chars": 319
+    },
+    {
+      "title": "Reviews",
+      "url": "https://www.marrfa.com/about#review",
+      "chars": 830
+    },
+    {
+      "title": "Contact",
+      "url": "https://www.marrfa.com/about#contact",
+      "chars": 5203
+    },
+    {
+      "title": "Privacy & Policy",
+      "url": "https://www.marrfa.com/privacy-policy",
+      "chars": 2842
+    },
+    {
+      "title": "Terms & Conditions",
+      "url": "https://www.marrfa.com/terms-and-conditions",
+      "chars": 1792
+    },
+    {
+      "title": "Partnership",
+      "url": "https://www.marrfa.com/partnership",
+      "chars": 1453
+    }
+  ],
+  "num_chunks": 20
+}
