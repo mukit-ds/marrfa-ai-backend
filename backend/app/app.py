@@ -1,10 +1,10 @@
-# frontend/app.py
 import streamlit as st
 import requests
 import uuid
 from streamlit_mic_recorder import mic_recorder
+import re
 
-BASE_API = "http://127.0.0.1:8000/api"
+BASE_API = ("http://127.0.0.1:9000/api")
 
 st.set_page_config(page_title="Marrfa AI", page_icon="🏙️", layout="wide")
 
@@ -98,9 +98,100 @@ with st.sidebar:
             st.rerun()
 
 
+def is_likely_english(text):
+    """Check if the text is likely English with more lenient rules."""
+    if not text or not text.strip():
+        return False
+
+    text = text.strip()
+
+    # If it's very short (less than 3 characters), accept it
+    if len(text) < 3:
+        return True
+
+    # Convert to lowercase for easier checking
+    text_lower = text.lower()
+
+    # Check for CLEARLY non-English scripts (very strict regex)
+    # Arabic characters range
+    if re.search(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]', text):
+        return False
+
+    # Chinese/Japanese/Korean characters
+    if re.search(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]', text):
+        return False
+
+    # Cyrillic characters
+    if re.search(r'[\u0400-\u04FF\u0500-\u052F]', text):
+        return False
+
+    # Hindi/Devanagari characters
+    if re.search(r'[\u0900-\u097F]', text):
+        return False
+
+    # If text contains any of these patterns, assume it's English:
+    # 1. Common English letters only (a-z, A-Z, spaces, basic punctuation)
+    english_pattern = r'^[a-zA-Z0-9\s\.,\?!\-\'"]+$'
+
+    # 2. Contains common English words
+    common_english_words = [
+        'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
+        'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
+        'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
+        'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their',
+        'what', 'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which',
+        'go', 'me', 'when', 'make', 'can', 'like', 'time', 'no', 'just',
+        'him', 'know', 'take', 'people', 'into', 'year', 'your', 'good',
+        'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now',
+        'look', 'only', 'come', 'its', 'over', 'think', 'also', 'back',
+        'after', 'use', 'two', 'how', 'our', 'work', 'first', 'well',
+        'way', 'even', 'new', 'want', 'because', 'any', 'these', 'give',
+        'day', 'most', 'us'
+    ]
+
+    # Check if text matches basic English pattern
+    if re.match(english_pattern, text):
+        return True
+
+    # Check for common English words (even partial matches)
+    for word in common_english_words:
+        if word in text_lower:
+            return True
+
+    # Check for common real estate terms
+    estate_words = [
+        'property', 'properties', 'real estate', 'dubai', 'apartment', 'villa',
+        'price', 'location', 'bedroom', 'bathroom', 'square', 'feet', 'meter',
+        'view', 'pool', 'gym', 'parking', 'balcony', 'kitchen', 'living', 'room',
+        'for sale', 'for rent', 'buy', 'rent', 'lease', 'agent', 'developer',
+        'project', 'community', 'neighborhood', 'amenities', 'facilities',
+        'marrfa', 'house', 'home', 'investment', 'luxury', 'modern', 'new'
+    ]
+
+    for word in estate_words:
+        if word in text_lower:
+            return True
+
+    # If text is mostly ASCII characters and doesn't contain clearly non-English scripts,
+    # assume it's English (Whisper is good at transcribing English)
+    ascii_ratio = sum(1 for c in text if ord(c) < 128) / len(text)
+    if ascii_ratio > 0.8:  # 80% ASCII characters
+        return True
+
+    return False
+
+
 def send_message(text: str, files=None):
     """Send a message to the chatbot with optional files"""
     if not text and not files:
+        return
+
+    # Check if text is likely English (more lenient check)
+    if text and not is_likely_english(text):
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "I apologize, but I'm having trouble understanding that. I can only understand and respond to English. Could you please repeat your question in English about Marrfa properties?"
+        })
         return
 
     # Add user message
@@ -229,9 +320,30 @@ if audio and audio.get("bytes"):
         response = requests.post(f"{BASE_API}/transcribe", files=files)
 
         if response.status_code == 200:
-            transcript = response.json().get("text", "")
-            if transcript:
-                send_message(transcript)
+            result = response.json()
+            transcript = result.get("text", "")
+            error_msg = result.get("error", "")
+
+            if error_msg:
+                # Show error but don't add to chat history to avoid repetition
+                st.error(f"Voice transcription error: {error_msg}")
+                st.rerun()
+            elif transcript:
+                # Check if transcript is likely English (lenient check)
+                if not is_likely_english(transcript):
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": "I apologize, but I'm having trouble understanding that. I can only understand and respond to English. Could you please repeat your question in English about Marrfa properties?"
+                    })
+                    st.rerun()
+                else:
+                    send_message(transcript)
+                    st.rerun()
+            else:
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "I couldn't detect any speech. Could you please speak clearly in English about Marrfa properties?"
+                })
                 st.rerun()
         else:
             st.error("Voice transcription service unavailable")

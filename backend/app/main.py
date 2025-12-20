@@ -1,4 +1,3 @@
-# backend/app/main.py
 import os
 import tempfile
 import hashlib
@@ -50,6 +49,24 @@ SUPPORTED_EXTENSIONS = {
 }
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+def get_greeting_response(intent_result: Dict[str, Any]) -> str:
+    """Generate appropriate greeting response based on intent classification method."""
+    method = intent_result.get("method", "")
+
+    if method == "listening_check":
+        return "Yes, I'm listening! 👋 I'm Marrfa AI, ready to help you with Dubai properties and Marrfa company information. What would you like to know?"
+    elif method == "chatbot_self":
+        return "Yes, I'm here and ready to assist! I'm Marrfa AI, specialized in Dubai real estate and Marrfa company information. How can I help you today?"
+    elif method == "empty_query":
+        return "Hello! 👋 I noticed you sent a short message. I'm Marrfa AI, here to help with Dubai properties and Marrfa company details. What would you like to know?"
+    else:
+        return (
+            "Hello! 👋 I'm Marrfa AI. "
+            "You can ask me about Marrfa (team, CEO, policies, terms) "
+            "or search for properties in Dubai. You can also upload files for analysis."
+        )
 
 
 # --- API Endpoints ---
@@ -128,12 +145,9 @@ async def chat(request: Request):
     # 1️⃣ Greeting
     if intent == "GREETING":
         print("Handling greeting intent")
+        greeting_reply = get_greeting_response(intent_result)
         return ChatResponse(
-            reply=(
-                "Hello! 👋 I'm Marrfa AI. "
-                "You can ask me about Marrfa (team, CEO, policies, terms) "
-                "or search for properties in Dubai. You can also upload files for analysis."
-            ),
+            reply=greeting_reply,
             filters_used={"intent": "GREETING", "method": intent_result["method"]}
         )
 
