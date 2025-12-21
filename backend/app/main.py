@@ -7,6 +7,9 @@ import base64
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import io
+import time
+import asyncio
+from functools import lru_cache
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,6 +23,7 @@ from .company_kb import handle_company_query
 from .file_processor import process_uploaded_file, analyze_files_with_ai
 from .audio_transcription import transcribe_audio
 from .auth import hash_password, check_and_update_limit, handle_signup, handle_login
+from .parser import parse_query_to_filters
 
 load_dotenv()
 app = FastAPI()
@@ -49,6 +53,55 @@ SUPPORTED_EXTENSIONS = {
 }
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+# --- Caching Setup ---
+QUERY_CACHE = {}
+CACHE_TIMEOUT = 300  # 5 minutes
+PROPERTY_CACHE = {}
+PROPERTY_CACHE_TIMEOUT = 60  # 1 minute for property searches
+
+
+def get_cache_key(query_text: str, intent: str, filters: Dict = None) -> str:
+    """Generate a cache key for queries."""
+    key_data = f"{query_text}:{intent}"
+    if filters:
+        # Sort filters for consistent keys
+        key_data += f":{json.dumps({k: filters[k] for k in sorted(filters.keys()) if filters[k] is not None}, sort_keys=True)}"
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+
+def clear_old_cache():
+    """Clear old cache entries."""
+    current_time = time.time()
+    keys_to_delete = []
+
+    # Clear QUERY_CACHE
+    for key, (timestamp, _) in QUERY_CACHE.items():
+        if current_time - timestamp > CACHE_TIMEOUT:
+            keys_to_delete.append(key)
+    for key in keys_to_delete:
+        del QUERY_CACHE[key]
+
+    # Clear PROPERTY_CACHE
+    keys_to_delete = []
+    for key, (timestamp, _) in PROPERTY_CACHE.items():
+        if current_time - timestamp > PROPERTY_CACHE_TIMEOUT:
+            keys_to_delete.append(key)
+    for key in keys_to_delete:
+        del PROPERTY_CACHE[key]
+
+
+# --- Optimized Functions with Caching ---
+@lru_cache(maxsize=500)
+def classify_intent_cached(query: str) -> Dict[str, Any]:
+    """Cached version of intent classification."""
+    return classify_intent(query, client)
+
+
+@lru_cache(maxsize=1000)
+def parse_query_to_filters_cached(query: str) -> Dict:
+    """Cached version of parser."""
+    return parse_query_to_filters(query)
 
 
 def get_greeting_response(intent_result: Dict[str, Any]) -> str:
@@ -83,6 +136,12 @@ async def login(req: LoginRequest):
 @app.post("/api/chat")
 async def chat(request: Request):
     """Handle chat requests with optional file uploads."""
+    start_time = time.time()
+
+    # Clear old cache periodically
+    if len(QUERY_CACHE) > 1000 or len(PROPERTY_CACHE) > 500:
+        clear_old_cache()
+
     # Check if the request is multipart/form-data (for file uploads)
     content_type = request.headers.get("content-type", "")
 
@@ -134,22 +193,33 @@ async def chat(request: Request):
             )
 
     query_text = (query or "").strip()
-    print(f"Query text: '{query_text}'")
+    print(f"Query text: '{query_text}' - Processing time: {time.time() - start_time:.2f}s")
 
-    # Classify intent
-    intent_result = classify_intent(query_text, client)
+    # Check cache first (only for non-file queries)
+    if not files:
+        cache_key = get_cache_key(query_text, "intent_only")
+        if cache_key in QUERY_CACHE:
+            timestamp, cached_result = QUERY_CACHE[cache_key]
+            if time.time() - timestamp < CACHE_TIMEOUT:
+                print(f"Cache hit for: {query_text}")
+                return cached_result
+
+    # Classify intent (using cached version)
+    intent_result = classify_intent_cached(query_text)
     intent = intent_result["intent"]
 
-    print(f"Intent result: {intent_result}")
+    print(f"Intent result: {intent_result} - Time: {time.time() - start_time:.2f}s")
 
-    # 1️⃣ Greeting
+    # 1️⃣ Greeting (fast path)
     if intent == "GREETING":
-        print("Handling greeting intent")
         greeting_reply = get_greeting_response(intent_result)
-        return ChatResponse(
+        response = ChatResponse(
             reply=greeting_reply,
             filters_used={"intent": "GREETING", "method": intent_result["method"]}
         )
+        if not files:
+            QUERY_CACHE[cache_key] = (time.time(), response)
+        return response
 
     # Process uploaded files if any
     file_contents = []
@@ -191,19 +261,30 @@ async def chat(request: Request):
     if file_contents:
         print("Analyzing uploaded files")
         analysis_result = analyze_files_with_ai(file_contents, query_text, client)
-        return ChatResponse(
+        response = ChatResponse(
             reply=analysis_result,
             filters_used={"intent": "FILE_ANALYSIS", "files_count": len(files)}
         )
+        # Don't cache file analysis results
+        return response
 
     # No files, proceed with normal chat routing based on intent
     if intent == "PROPERTY":
         print("Handling PROPERTY intent")
         try:
-            result = handle_property_query(query_text)
-            print(f"Property search result: {result}")
+            # Check for property query cache
+            filters = parse_query_to_filters_cached(query_text)
+            property_cache_key = get_cache_key(query_text, "PROPERTY", filters)
 
-            # Create the response
+            if property_cache_key in PROPERTY_CACHE:
+                timestamp, cached_result = PROPERTY_CACHE[property_cache_key]
+                if time.time() - timestamp < PROPERTY_CACHE_TIMEOUT:
+                    print(f"Property cache hit for: {query_text}")
+                    return cached_result
+
+            # Run property search
+            result = handle_property_query(query_text)
+
             response = ChatResponse(
                 reply=result["reply"],
                 properties=result["properties"],
@@ -213,8 +294,18 @@ async def chat(request: Request):
                 filters_used=result["filters"]
             )
 
-            print(f"Response: {response.dict()}")
+            # Cache successful property queries (only if we found properties)
+            if result["total"] > 0:
+                PROPERTY_CACHE[property_cache_key] = (time.time(), response)
+
+            # Also cache in general query cache
+            if not files:
+                general_cache_key = get_cache_key(query_text, "intent_only")
+                QUERY_CACHE[general_cache_key] = (time.time(), response)
+
+            print(f"Property search completed in {time.time() - start_time:.2f}s")
             return response
+
         except Exception as e:
             print(f"Property search error: {e}")
             import traceback
@@ -231,9 +322,16 @@ async def chat(request: Request):
     elif intent == "COMPANY":
         print("Handling COMPANY intent")
         try:
+            # Check for company query cache
+            company_cache_key = get_cache_key(query_text, "COMPANY")
+            if company_cache_key in QUERY_CACHE:
+                timestamp, cached_result = QUERY_CACHE[company_cache_key]
+                if time.time() - timestamp < CACHE_TIMEOUT:
+                    print(f"Company cache hit for: {query_text}")
+                    return cached_result
+
             result = handle_company_query(query_text)
-            print(f"Company KB result: {result}")
-            return ChatResponse(
+            response = ChatResponse(
                 reply=result["reply"],
                 properties=[],
                 total=0,
@@ -241,6 +339,13 @@ async def chat(request: Request):
                 per_page=10,
                 filters_used=result["filters"]
             )
+
+            # Cache company queries (they're usually static)
+            QUERY_CACHE[company_cache_key] = (time.time(), response)
+
+            print(f"Company KB completed in {time.time() - start_time:.2f}s")
+            return response
+
         except Exception as e:
             print(f"Company KB error: {e}")
             import traceback
@@ -256,7 +361,7 @@ async def chat(request: Request):
 
     # 5️⃣ Out of context
     print("Handling OUT_OF_CONTEXT intent")
-    return ChatResponse(
+    response = ChatResponse(
         reply="I'm trained specifically on Marrfa Real Estate. Please ask about Marrfa or properties in Dubai.",
         properties=[],
         total=0,
@@ -264,12 +369,43 @@ async def chat(request: Request):
         per_page=10,
         filters_used={"intent": "OUT_OF_CONTEXT", "method": intent_result["method"]},
     )
+    if not files:
+        cache_key = get_cache_key(query_text, "intent_only")
+        QUERY_CACHE[cache_key] = (time.time(), response)
+    return response
 
 
 @app.post("/api/transcribe")
 async def transcribe(file: UploadFile = File(...)):
     """Transcribe audio using OpenAI Whisper."""
     return await transcribe_audio(file, client)
+
+
+# --- Cache Management Endpoints ---
+@app.post("/api/clear-cache")
+async def clear_cache():
+    """Clear the query cache."""
+    global QUERY_CACHE, PROPERTY_CACHE
+    old_query_size = len(QUERY_CACHE)
+    old_property_size = len(PROPERTY_CACHE)
+    QUERY_CACHE = {}
+    PROPERTY_CACHE = {}
+    return {
+        "message": f"Cache cleared. Removed {old_query_size} query entries and {old_property_size} property entries.",
+        "old_query_size": old_query_size,
+        "old_property_size": old_property_size
+    }
+
+
+@app.get("/api/cache-stats")
+async def cache_stats():
+    """Get cache statistics."""
+    return {
+        "query_cache_size": len(QUERY_CACHE),
+        "property_cache_size": len(PROPERTY_CACHE),
+        "query_cache_timeout": CACHE_TIMEOUT,
+        "property_cache_timeout": PROPERTY_CACHE_TIMEOUT
+    }
 
 
 # --- Health & Debug Endpoints ---
@@ -283,7 +419,10 @@ async def health():
         "kb_error": getattr(kb, 'faiss_kb_error', None),
         "file_analysis_enabled": True,
         "max_file_size_mb": MAX_FILE_SIZE / 1024 / 1024,
-        "openai_client": bool(client)
+        "openai_client": bool(client),
+        "caching_enabled": True,
+        "query_cache_size": len(QUERY_CACHE),
+        "property_cache_size": len(PROPERTY_CACHE)
     }
 
 
@@ -320,7 +459,7 @@ async def debug_intent(query: str = ""):
     if not query:
         return {"error": "No query provided"}
 
-    intent_result = classify_intent(query, client)
+    intent_result = classify_intent_cached(query)
 
     return {
         "query": query,
@@ -385,3 +524,31 @@ async def debug_query(query: str = "Who is the ceo?"):
         "answer": answer,
         "total_chunks": len(kb.chunk_by_id)
     }
+
+
+# --- Startup Event ---
+@app.on_event("startup")
+async def startup_event():
+    """Initialize caches and warm up frequently used queries."""
+    print("Starting up Marrfa AI Chatbot...")
+
+    # Warm up the intent classifier cache with common queries
+    warm_up_queries = [
+        "hello",
+        "hi",
+        "properties in dubai",
+        "show me apartments",
+        "who is the ceo of marrfa",
+        "about marrfa",
+        "thank you",
+        "help"
+    ]
+
+    for query in warm_up_queries:
+        try:
+            classify_intent_cached(query)
+        except:
+            pass
+
+    print(f"Warmed up intent classifier with {len(warm_up_queries)} queries")
+    print(f"Cache initialized: query_cache={len(QUERY_CACHE)}, property_cache={len(PROPERTY_CACHE)}")
