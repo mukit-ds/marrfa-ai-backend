@@ -160,6 +160,7 @@ yarl==1.22.0
 zipp==3.23.0
 zstandard==0.25.0
 streamlit
-streamlit-mic-recorder 
+streamlit-mic-recorder==0.0.8
 sympy==1.14.0
+
 
