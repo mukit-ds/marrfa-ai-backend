@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 import concurrent.futures
 import asyncio
 
-BASE_API = "http://127.0.0.1:8000/api"
+BASE_API = "http://127.0.0.1:9000/api"
 
 st.set_page_config(page_title="Marrfa AI", page_icon="🏙️", layout="wide")
 
