@@ -279,3 +279,48 @@ async def transcribe_endpoint(file: UploadFile = File(...)):
         return {"text": text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+from fastapi import Body
+
+@app.post("/chat-json")
+async def chat_json(payload: dict = Body(...)):
+    """
+    Swagger-friendly JSON chat endpoint.
+    Body example:
+    {
+      "query":"who is the ceo?",
+      "session_id":"test-123",
+      "is_logged_in":false,
+      "files":[]
+    }
+    """
+    # Reuse your current /chat logic by faking a Request-like dict:
+    query = (payload.get("query") or "").strip()
+    session_id = payload.get("session_id")
+    is_logged_in = bool(payload.get("is_logged_in", False))
+    files = payload.get("files", []) or []
+
+    # Now call your internal logic (copy the same routing logic you use in /chat)
+    # Minimal version:
+    if not query:
+        return {"reply": "Please type a message.", "properties": [], "total": 0, "page": 1, "per_page": 10, "filters_used": {"error":"EMPTY_QUERY"}}
+
+    intent_result = classify_intent_cached(query)
+    intent = intent_result["intent"]
+
+    if intent == "COMPANY":
+        return handle_company_query(query).model_dump()
+
+    if intent == "PROPERTY":
+        resp = await handle_property_query(query, intent_result)
+        return resp.model_dump() if hasattr(resp, "model_dump") else resp
+
+    if intent == "GREETING":
+        return {"reply": get_greeting_response(intent_result), "properties": [], "total": 0, "page": 1, "per_page": 10,
+                "filters_used": {"intent":"GREETING"}}
+
+    return {"reply": "I'm trained specifically on Marrfa Real Estate. Please ask about Marrfa or properties in Dubai.",
+            "properties": [], "total": 0, "page": 1, "per_page": 10, "filters_used": {"intent":"OUT_OF_CONTEXT"}}
+
