@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 import concurrent.futures
 import asyncio
 
-BASE_API = "https://marrfa-ai-backend-1.onrender.com/api"
+BASE_API = "https://marrfa-ai-backend-1.onrender.com"
 
 st.set_page_config(page_title="Marrfa AI", page_icon="🏙️", layout="wide")
 
