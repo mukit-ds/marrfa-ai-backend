@@ -133,8 +133,8 @@ async def login(req: LoginRequest):
     return handle_login(req.identifier, req.password, users_col)
 
 
-@app.post("/api/chat")
-async def chat(request: Request):
+@app.post("/chat")
+async def chat_endpoint(request: ChatRequest):
     """Handle chat requests with optional file uploads."""
     start_time = time.time()
 
@@ -372,7 +372,7 @@ async def chat(request: Request):
     if not files:
         cache_key = get_cache_key(query_text, "intent_only")
         QUERY_CACHE[cache_key] = (time.time(), response)
-    return response
+        return {"response": "Your response here", "intent": intent}
 
 
 @app.post("/api/transcribe")
